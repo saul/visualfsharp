@@ -15,6 +15,7 @@ open Microsoft.CodeAnalysis.Editor.Host
 open Microsoft.CodeAnalysis.Navigation
 open Microsoft.CodeAnalysis.Host.Mef
 open Microsoft.CodeAnalysis.Text
+open Microsoft.CodeAnalysis.FindSymbols
 
 open Microsoft.FSharp.Compiler.Range
 open Microsoft.FSharp.Compiler.SourceCodeServices
@@ -40,18 +41,14 @@ type internal FSharpGoToDefinitionService
         [<ImportMany>]presenters: IEnumerable<INavigableItemsPresenter>
     ) =
 
-    static member FindDefinition(checker: FSharpChecker, documentKey: DocumentId, sourceText: SourceText, filePath: string, position: int, defines: string list, options: FSharpProjectOptions, textVersionHash: int) : Async<Option<range>> = 
+    static member FindDefinition(checker: FSharpChecker, documentKey: DocumentId, sourceText: SourceText, filePath: string, position: int, defines: string list, options: FSharpProjectOptions, textVersionHash: int) : Async<FSharpFindDeclResult option> = 
         asyncMaybe {
             let textLine = sourceText.Lines.GetLineFromPosition(position)
             let textLinePos = sourceText.Lines.GetLinePosition(position)
             let fcsTextLineNumber = Line.fromZ textLinePos.Line
             let! symbol = CommonHelpers.getSymbolAtPosition(documentKey, sourceText, position, filePath, defines, SymbolLookupKind.Greedy)
             let! _, _, checkFileResults = checker.ParseAndCheckDocument(filePath, textVersionHash, sourceText.ToString(), options, allowStaleResults = true)
-            let! declarations = checkFileResults.GetDeclarationLocationAlternate (fcsTextLineNumber, symbol.Ident.idRange.EndColumn, textLine.ToString(), symbol.FullIsland, false) |> liftAsync
-            
-            match declarations with
-            | FSharpFindDeclResult.DeclFound(range) -> return range
-            | _ -> return! None
+            return! checkFileResults.GetDeclarationLocationAlternate (fcsTextLineNumber, symbol.Ident.idRange.EndColumn, textLine.ToString(), symbol.FullIsland, false) |> liftAsync
         }
     
     // FSROSLYNTODO: Since we are not integrated with the Roslyn project system yet, the below call
@@ -65,16 +62,52 @@ type internal FSharpGoToDefinitionService
             let! sourceText = document.GetTextAsync(cancellationToken)
             let! textVersion = document.GetTextVersionAsync(cancellationToken)
             let defines = CompilerEnvironment.GetCompilationDefinesForEditing(document.Name, options.OtherOptions |> Seq.toList)
-            let! range = FSharpGoToDefinitionService.FindDefinition(checkerProvider.Checker, document.Id, sourceText, document.FilePath, position, defines, options, textVersion.GetHashCode())
-            // REVIEW: 
-            let fileName = try System.IO.Path.GetFullPath(range.FileName) with _ -> range.FileName
-            let refDocumentIds = document.Project.Solution.GetDocumentIdsWithFilePath(fileName)
-            if not refDocumentIds.IsEmpty then 
-                let refDocumentId = refDocumentIds.First()
-                let refDocument = document.Project.Solution.GetDocument(refDocumentId)
-                let! refSourceText = refDocument.GetTextAsync(cancellationToken)
-                let refTextSpan = CommonRoslynHelpers.FSharpRangeToTextSpan(refSourceText, range)
-                results.Add(FSharpNavigableItem(refDocument, refTextSpan))
+            let! declResult = FSharpGoToDefinitionService.FindDefinition(checkerProvider.Checker, document.Id, sourceText, document.FilePath, position, defines, options, textVersion.GetHashCode())
+
+            match declResult with
+            | FSharpFindDeclResult.ExternalDecl (assy, symname) ->
+                let! project =
+                    document.Project.Solution.Projects
+                    |> Seq.tryFind (fun p -> p.AssemblyName = assy)
+                
+                let! symbols = SymbolFinder.FindSourceDeclarationsAsync(project, fun (s:string) -> true)
+
+                let fullName sym =
+                    let rec inner (sym : ISymbol) parts =
+                        match sym.ContainingSymbol with
+                        | null ->
+                            parts
+                        // TODO: do we have any other terminating cases?
+                        | container when container.Kind = SymbolKind.NetModule ->
+                            parts
+                        | container when container.Kind = SymbolKind.Assembly ->
+                            parts
+                        // TODO: there are probably other containing symbols we'd want to skip
+                        | container when container.Name <> "" ->
+                            inner container (container.Name :: parts)
+                        | container ->
+                            inner container parts
+                    inner sym [sym.Name] |> String.concat "."
+
+                let! symbol = symbols |> Seq.tryFind (fun sym ->
+                    let fn = fullName sym
+                    let _res = sprintf "%A = %A" fn symname
+                    fn = symname
+                    )
+                let! location = symbol.Locations |> Seq.tryHead
+                
+                results.Add(FSharpNavigableItem(project.GetDocument(location.SourceTree), location.SourceSpan))
+            | FSharpFindDeclResult.DeclFound range ->
+                // REVIEW: 
+                let fileName = try System.IO.Path.GetFullPath(range.FileName) with _ -> range.FileName
+                let refDocumentIds = document.Project.Solution.GetDocumentIdsWithFilePath(fileName)
+                if not refDocumentIds.IsEmpty then 
+                    let refDocumentId = refDocumentIds.First()
+                    let refDocument = document.Project.Solution.GetDocument(refDocumentId)
+                    let! refSourceText = refDocument.GetTextAsync(cancellationToken)
+                    let refTextSpan = CommonRoslynHelpers.FSharpRangeToTextSpan(refSourceText, range)
+                    results.Add(FSharpNavigableItem(refDocument, refTextSpan))
+            | _ -> ()
             return results.AsEnumerable()
          }
          |> Async.map (Option.defaultValue Seq.empty)
