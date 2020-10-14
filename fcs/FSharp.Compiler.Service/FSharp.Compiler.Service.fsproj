@@ -19,9 +19,7 @@
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
     <DebugType>embedded</DebugType>
     <SignAssembly>true</SignAssembly>
-    <!-- TODO: strong name key
     <AssemblyOriginatorKeyFile>fcs.snk</AssemblyOriginatorKeyFile>
-    -->
   </PropertyGroup>
   <PropertyGroup>
     <Summary>The F# compiler as library. For editors, for tools, for scripting. For you.</Summary>
@@ -44,6 +42,11 @@
     <DefineConstants>$(DefineConstants);FX_NO_SYSTEM_CONFIGURATION</DefineConstants>
     <DefineConstants>$(DefineConstants);FX_RESHAPED_REFEMIT</DefineConstants>
   </PropertyGroup>
+  <ItemGroup>
+    <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleToAttribute">
+      <_Parameter1>FSharp.Compiler.Service.Tests</_Parameter1>
+    </AssemblyAttribute>
+  </ItemGroup>
   <ItemGroup>
     <None Include="$(MSBuildThisFileDirectory)..\misc\logo.png" Pack="true" Visible="false" PackagePath="" />
     <EmbeddedText Include="$(FSharpSourcesRoot)\fsharp\FSComp.txt">
