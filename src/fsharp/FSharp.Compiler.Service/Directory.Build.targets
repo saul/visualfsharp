@@ -1,5 +1,11 @@
 <Project>
 
+  <ItemGroup>
+    <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleToAttribute">
+      <_Parameter1>%(InternalsVisibleTo->Identity)</_Parameter1>
+    </AssemblyAttribute>
+  </ItemGroup>
+
   <Target Name="_GenerateBuildPropertiesFile"
           Outputs="$(IntermediateOutputPath)buildproperties.fs"
           BeforeTargets="BeforeBuild"
